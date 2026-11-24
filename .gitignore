@@ -1,0 +1,5 @@
+/outputs/
+/work/
+/local-archive/
+**/CraftingHistory.tsv
+__pycache__/
