@@ -162,6 +162,9 @@ internal sealed class CraftingForm : Form
             {
                 var quote = await workshop.OpenQuote(balance.MaterialCost);
                 await workshop.CloseQuote();
+                var afterPreview = await workshop.ReadBalance();
+                if (afterPreview.Materials != balance.Materials || afterPreview.MaterialCost != balance.MaterialCost)
+                    throw new InvalidOperationException("Workshop materials changed during the preview. Check the game screen.");
                 ShowStatus(string.Format("Batch of 10 verified. Cost: {0:N0} materials and {1:N0} gold. Balance: {2:N0} materials and {3:N0} gold.",
                     quote.Materials, quote.Gold, balance.Materials, balance.Gold));
                 return;

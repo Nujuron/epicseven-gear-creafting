@@ -9,6 +9,7 @@ internal static class RunSelfTest
     {
         public int CraftClicks;
         public bool BadBalance;
+        public bool ArrangeFailed;
         public readonly Workshop.Balance Starting = new Workshop.Balance { Materials = 1600, Gold = 2000000, MaterialCost = 400 };
         public int GoldCost = 210000;
         public int? ChangedQuote;
@@ -33,7 +34,14 @@ internal static class RunSelfTest
             return Task.CompletedTask;
         }
 
-        public Task ArrangeNewBatch() { return Task.CompletedTask; }
+        public Task VerifyNewBatch() { return Task.CompletedTask; }
+
+        public Task ArrangeNewBatch()
+        {
+            if (ArrangeFailed)
+                throw new InvalidOperationException("Arrange did not open.");
+            return Task.CompletedTask;
+        }
         public Task<Workshop.Disposal> ProcessRejects(GearAction action, Action<string> journal)
         {
             LastAction = action;
@@ -46,10 +54,49 @@ internal static class RunSelfTest
 
     public static async Task Check()
     {
+        if (Workshop.ReadGoldBalanceText("24,461 05") != -1 ||
+            Workshop.ReadGoldBalanceText("24,461,105") != 24461105 ||
+            Workshop.ReadGoldBalanceText("24 , 461 , 105") != 24461105 ||
+            Workshop.ReadGoldBalanceText("0") != 0)
+            throw new Exception("The gold balance reader accepted a partial amount or rejected a complete one.");
+
         if (Workshop.ReadSaleCount("Do you want to sell 10 selected item(s)?") != 10 ||
             Workshop.ReadSaleCount("Do you want to sell 1 selected item(s)?") != 1 ||
             Workshop.ReadSaleCount("Do you want to sell 100 selected item(s)?") != -1)
             throw new Exception("Could not distinguish the number of pieces in the Sell dialog.");
+        if (Workshop.ParseSelected("O selected") != 0 || Workshop.ParseSelected("0 selected") != 0 ||
+            Workshop.ParseSelected("10 selected") != 10 || Workshop.ParseSelected("10O selected") != -1)
+            throw new Exception("Could not distinguish the number of pieces selected in Arrange.");
+
+        using (var results = new Bitmap(GameWindow.Width, GameWindow.Height))
+        using (var graphics = Graphics.FromImage(results))
+        using (var blue = new SolidBrush(Color.FromArgb(5, 38, 70)))
+        {
+            graphics.Clear(Color.FromArgb(3, 10, 20));
+            graphics.FillRectangle(blue, 610, 245, 98, 98);
+            graphics.FillRectangle(Brushes.Silver, 622, 257, 74, 74);
+            graphics.Flush();
+            if (Workshop.CountGearCards(results) != 1)
+                throw new Exception("A neutral equipment illustration hid its card.");
+
+            graphics.Clear(Color.FromArgb(3, 10, 20));
+            for (int row = 0; row < 3; row++)
+            {
+                int first = row == 2 ? 457 : 152;
+                int last = row == 2 ? 762 : 1067;
+                for (int x = first; x <= last; x += 305)
+                {
+                    int y = 245 + row * 135;
+                    graphics.FillRectangle(blue, x, y, 98, 98);
+                    graphics.FillRectangle(Brushes.Silver, x + 12, y + 12, 74, 74);
+                    graphics.FillRectangle(Brushes.White, x + 124, y + 26, 35, 12);
+                    graphics.FillRectangle(Brushes.Gold, x + 250, y + 5, 18, 15);
+                }
+            }
+            graphics.Flush();
+            if (Workshop.CountGearCards(results) != 10)
+                throw new Exception("The equipment result counter miscounted framed gear or counted stats as gear.");
+        }
 
         using (var reference = new Bitmap(GameWindow.Width, GameWindow.Height))
         using (var current = new Bitmap(GameWindow.Width, GameWindow.Height))
@@ -97,6 +144,21 @@ internal static class RunSelfTest
         if (replay.CraftClicks != 1 || run.Spent != 500 || run.Kept != 2)
             throw new Exception("The run used weapon costs for a different recipe.");
 
+        replay = new Replay { GoldCost = 210000 };
+        replay.Starting.Gold = 300000;
+        run = new CraftingRun();
+        try
+        {
+            await run.Execute(replay, replay.Starting, 800, 20, ignored => {}, ignored => {}, CancellationToken.None);
+            throw new Exception("The run continued after its gold became insufficient.");
+        }
+        catch (InvalidOperationException error)
+        {
+            if (replay.CraftClicks != 1 || run.Spent != 400 || run.Pending ||
+                !error.Message.Contains(91739.ToString("N0")))
+                throw new Exception("The gold check did not stop before confirming the unaffordable batch.");
+        }
+
         replay = new Replay();
         run = new CraftingRun();
         await run.Execute(replay, replay.Starting, 400, 20, ignored => {}, ignored => {}, CancellationToken.None, GearAction.Extract);
@@ -128,6 +190,20 @@ internal static class RunSelfTest
         {
             if (replay.CraftClicks != 1 || run.Spent != 0 || !run.Pending)
                 throw new Exception("The run lost track of an unverified batch.");
+        }
+
+        replay = new Replay { ArrangeFailed = true };
+        run = new CraftingRun();
+        try
+        {
+            await run.Execute(replay, replay.Starting, 800, 20, ignored => {}, ignored => {}, CancellationToken.None);
+            throw new Exception("The run continued after Arrange failed.");
+        }
+        catch (InvalidOperationException)
+        {
+            if (replay.CraftClicks != 1 || !run.Pending || !run.PendingCraftObserved ||
+                run.PendingMaterialCost != 400 || run.Spent != 0)
+                throw new Exception("An Arrange failure lost track of the verified craft.");
         }
 
         replay = new Replay();

@@ -3,7 +3,6 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Globalization;
@@ -35,7 +34,7 @@ internal sealed class WindowsOcr
     }
 
     public async Task<string> Read(Bitmap source, Rectangle area, CancellationToken token, bool whiteNumbers = false,
-        int? nearX = null, bool yellowNumbers = false)
+        bool yellowNumbers = false)
     {
         token.ThrowIfCancellationRequested();
         bool isolateNumbers = whiteNumbers || yellowNumbers;
@@ -79,12 +78,6 @@ internal sealed class WindowsOcr
             using (var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore).AsTask(token).ConfigureAwait(false))
             {
                 var result = await engine.RecognizeAsync(bitmap).AsTask(token).ConfigureAwait(false);
-                if (nearX.HasValue)
-                {
-                    return result.Lines.SelectMany(line => line.Words)
-                        .Where(word => Math.Abs(area.X + (word.BoundingRect.X - padding) / scale - nearX.Value) <= 12)
-                        .Select(word => word.Text).FirstOrDefault() ?? "";
-                }
                 return result.Text;
             }
         }

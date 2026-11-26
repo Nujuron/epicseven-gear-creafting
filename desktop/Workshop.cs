@@ -124,6 +124,14 @@ internal sealed class Workshop : IWorkshop, IDisposable
             int.TryParse(text.Replace(",", ""), NumberStyles.None, CultureInfo.InvariantCulture, out value) ? value : -1;
     }
 
+    internal static int ReadGoldBalanceText(string text)
+    {
+        int gold = ReadNumber(text);
+        // The Workshop groups balances of 1,000 or more with commas.
+        // Accept only the whole field so a readable prefix cannot stand in for the balance.
+        return gold >= 1000 && text.IndexOf(',') < 0 ? -1 : gold;
+    }
+
     private Task<string> Read(Bitmap image, int x, int y, int w, int h)
     {
         return ocr.Read(image, new Rectangle(x, y, w, h), token);
@@ -254,9 +262,10 @@ internal sealed class Workshop : IWorkshop, IDisposable
         }
     }
 
-    private async Task Require(string name, Func<Bitmap, Task<bool>> read, int settleMs = 160)
+    private async Task Require(string name, Func<Bitmap, Task<bool>> read, int settleMs = 160,
+        Func<string> detail = null)
     {
-        await WaitFor(name, async image => await read(image) ? new object() : null, settleMs);
+        await WaitFor(name, async image => await read(image) ? new object() : null, settleMs, detail);
     }
 
     public Task<Balance> ReadBalance()
@@ -281,14 +290,15 @@ internal sealed class Workshop : IWorkshop, IDisposable
             var costs = materialText.Split('/');
             int start = GoldTextStart(image);
             string header = start > 0 ? await ReadWhite(image, start, 25, 1056 - start, 30) : "";
-            if (start > 0 && string.IsNullOrWhiteSpace(header))
-                header = await Read(image, start, 17, 1075 - start, 48);
-            if (start > 0 && string.IsNullOrWhiteSpace(header))
-                header = await ocr.Read(image, new Rectangle(810, 10, 285, 65), token, nearX: start);
-            var amounts = Regex.Matches(header, @"(?<![0-9,])[0-9]{1,3}(?:\s*,\s*[0-9]{3})+(?![0-9,])");
-            int gold = amounts.Count == 1 ? ReadNumber(amounts[0].Value) : -1;
-            if (gold < 0 && start >= 0)
+            int gold = ReadGoldBalanceText(header);
+            if (gold < 0 && start > 0)
                 gold = await ReadGoldDigits(image, start);
+            if (gold < 0 && start > 0)
+            {
+                var alternate = await Read(image, start, 17, 1056 - start, 48);
+                gold = ReadGoldBalanceText(alternate);
+                header = string.Format("{0} / {1}", header.Trim(), alternate.Trim());
+            }
             if (costs.Length != 2 || ReadNumber(costs[1]) <= 0 || ReadNumber(costs[0]) < 0 || gold < 0)
             {
                 detail = string.Format("Read materials \"{0}\" and gold area \"{1}\".", materialText.Trim(), header.Trim());
@@ -352,49 +362,77 @@ internal sealed class Workshop : IWorkshop, IDisposable
 
     internal static int CountGearCards(Bitmap image)
     {
-        // Result tiles have colored rarity backgrounds; names, stats and set icons sit outside these sample areas.
+        const int firstColumn = 140;
+        const int lastColumn = 1185;
+        const int minEdgeDistance = 88;
+        const int maxEdgeDistance = 104;
+        var edges = new bool[lastColumn - firstColumn + 1];
         int count = 0;
         foreach (int top in new[] { 245, 380, 515 })
         {
-            int start = -1;
-            int last = -1;
-            for (int x = 140; x <= 1167; x++)
+            // The illustration can hide the rarity color in the middle of a tile.
+            // Look for two sustained vertical sides above the set badge.
+            for (int column = 0; column < edges.Length; column++)
             {
-                int colored = 0;
-                for (int y = top + 18; y < top + 81; y += 3)
+                int edgeSamples = 0;
+                for (int y = top + 24; y < top + 66; y += 3)
                 {
-                    var p = image.GetPixel(x, y);
+                    var p = image.GetPixel(firstColumn + column, y);
                     int min = Math.Min(p.R, Math.Min(p.G, p.B));
                     int max = Math.Max(p.R, Math.Max(p.G, p.B));
-                    if (max >= 80 && max - min >= 34)
-                        colored++;
+                    if (max >= 90 || (max >= 58 && max - min >= 32))
+                        edgeSamples++;
                 }
-                if (colored >= 5)
-                {
-                    if (start < 0) start = x;
-                    last = x;
-                }
-                else if (start >= 0 && x - last > 12)
-                {
-                    if (last - start >= 56 && last - start <= 111)
-                        count++;
-                    start = -1;
-                }
+                edges[column] = edgeSamples >= 11;
             }
-            if (start >= 0 && last - start >= 56 && last - start <= 111)
+            for (int left = 0; left + minEdgeDistance < edges.Length; left++)
+            {
+                if (!edges[left])
+                    continue;
+                int rightStart = left + minEdgeDistance;
+                int rightLength = Math.Min(maxEdgeDistance - minEdgeDistance + 1, edges.Length - rightStart);
+                if (Array.IndexOf(edges, true, rightStart, rightLength) < 0)
+                    continue;
                 count++;
+                left += maxEdgeDistance;
+            }
         }
         return count;
     }
 
+    public Task VerifyNewBatch()
+    {
+        string detail = "";
+        return Require("ten equipment results", async image =>
+        {
+            var title = (await Read(image, 652, 97, 190, 69)).Trim();
+            var arrange = (await Read(image, 1217, 645, 142, 47)).Trim();
+            int cards = CountGearCards(image);
+            if (Word(title, "Success") && Word(arrange, "Arrange") && cards == 10)
+                return true;
+
+            var quoteTitle = await Read(image, 475, 175, 545, 73);
+            string reading = Word(quoteTitle, "Craft 10 Pieces of Equipment")
+                ? "The craft confirmation is still open."
+                : string.Format("Read title \"{0}\", Arrange area \"{1}\", and {2} gear cards.", title, arrange, cards);
+            detail = string.Format("{0} Game area: {1} × {2}.", reading, observedBounds.Width, observedBounds.Height);
+            return false;
+        }, 1700, () => detail);
+    }
+
     public async Task ArrangeNewBatch()
     {
-        await Require("ten equipment results", async image =>
-            await Success(image) && await Label(image, 1217, 645, 142, 47, "Arrange") &&
-            await CountGear(image, 10) == 10, 1700);
         await Click(1285, 668);
+        string detail = "";
         await Require("Simple Selection with no gear selected", async image =>
-            await IsArrange(image) && await Selected(image) == 0);
+        {
+            var selection = (await Read(image, 79, 749, 158, 47)).Trim();
+            var count = (await ReadSelectedText(image)).Trim();
+            detail = string.Format("Read selection button \"{0}\" and count \"{1}\". Game area: {2} × {3}.",
+                selection, count, observedBounds.Width, observedBounds.Height);
+            return Word(selection, "Simple Selection") && ParseSelected(count) == 0 &&
+                await Success(image) && await Label(image, 1226, 645, 119, 46, "Cancel");
+        }, detail: () => detail);
     }
 
     private async Task<bool> IsArrange(Bitmap image)
@@ -403,11 +441,23 @@ internal sealed class Workshop : IWorkshop, IDisposable
             await Label(image, 1226, 645, 119, 46, "Cancel");
     }
 
+    private Task<string> ReadSelectedText(Bitmap image)
+    {
+        return Read(image, 674, 650, 158, 47);
+    }
+
     private async Task<int> Selected(Bitmap image)
     {
-        var text = await Read(image, 674, 650, 158, 47);
-        var match = Regex.Match(text.Trim(), @"^(10|[0-9]) selected$", RegexOptions.IgnoreCase);
-        return match.Success ? ReadNumber(match.Groups[1].Value) : -1;
+        return ParseSelected(await ReadSelectedText(image));
+    }
+
+    internal static int ParseSelected(string text)
+    {
+        var match = Regex.Match(text.Trim(), @"^(10|[0-9O])\s+selected$", RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return -1;
+        var count = match.Groups[1].Value;
+        return Word(count, "O") ? 0 : ReadNumber(count);
     }
 
     public async Task<Disposal> ProcessRejects(GearAction action, Action<string> journal)

@@ -9,6 +9,7 @@ internal interface IWorkshop
     Task<Workshop.Balance> ReadBalance();
     Task<Workshop.Quote> OpenQuote(int materialCost);
     Task ConfirmCraft();
+    Task VerifyNewBatch();
     Task ArrangeNewBatch();
     Task<Workshop.Disposal> ProcessRejects(GearAction action, Action<string> journal);
     Task FinishResults(Workshop.Disposal disposal);
@@ -43,24 +44,35 @@ internal sealed class CraftingRun
                 throw new InvalidOperationException("A batch needs enough materials and at least 10 free equipment slots.");
 
             var quote = await workshop.OpenQuote(balance.MaterialCost);
-            if (quote.Materials != balance.MaterialCost || quote.Materials > limit - Spent ||
-                quote.Gold <= 0 || quote.Gold > balance.Gold)
-                throw new InvalidOperationException("The batch cost changed, exceeds the budget, or there is insufficient gold.");
+            if (quote.Materials != balance.MaterialCost)
+                throw new InvalidOperationException(string.Format(
+                    "The craft quote reads {0:N0} materials. The Workshop reads {1:N0} materials per batch.",
+                    quote.Materials, balance.MaterialCost));
+            if (quote.Materials > limit - Spent)
+                throw new InvalidOperationException(string.Format(
+                    "The batch needs {0:N0} materials. The remaining budget is {1:N0}.", quote.Materials, limit - Spent));
+            if (quote.Gold <= 0)
+                throw new InvalidOperationException("Could not read the gold cost in the craft confirmation.");
+            if (quote.Gold > balance.Gold)
+                throw new InvalidOperationException(string.Format(
+                    "The batch costs {0:N0} gold. The Workshop balance was read as {1:N0} gold.",
+                    quote.Gold, balance.Gold));
             journal(string.Format("Craft click pending. Ten pieces cost {0} materials and {1} gold.", quote.Materials, quote.Gold));
             Pending = true;
             PendingMaterialCost = quote.Materials;
             await workshop.ConfirmCraft();
-            await workshop.ArrangeNewBatch();
+            await workshop.VerifyNewBatch();
             PendingCraftObserved = true;
             journal("Ten equipment results verified. Batch sorting and balance reconciliation pending.");
+            await workshop.ArrangeNewBatch();
             var disposal = await workshop.ProcessRejects(action, journal);
             await workshop.FinishResults(disposal);
             var after = await workshop.ReadBalance();
             if (after.MaterialCost != balance.MaterialCost || after.Materials != balance.Materials - quote.Materials)
                 throw new InvalidOperationException("The material balance differs from the verified batch. Check the latest results before restarting.");
             int batchKept = BatchSize - disposal.Count;
-            journal(string.Format("Batch {0} verified. Spent {1} materials and {2} gold. {3}. Kept {4}. Materials remaining {5}.",
-                Batches + 1, quote.Materials, quote.Gold, disposal.Describe(action), batchKept, after.Materials));
+            journal(string.Format("Batch {0} verified. Spent {1} materials and {2} gold. {3}. Kept {4}. Materials remaining {5}. Gold balance read as {6}.",
+                Batches + 1, quote.Materials, quote.Gold, disposal.Describe(action), batchKept, after.Materials, after.Gold));
             Pending = false;
             PendingCraftObserved = false;
             Batches++;

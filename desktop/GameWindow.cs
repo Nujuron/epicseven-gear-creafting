@@ -41,6 +41,7 @@ internal sealed class GameWindow
     [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] inputs, int size);
@@ -179,7 +180,6 @@ internal sealed class GameWindow
 
     public async Task Click(Point target, Rectangle observedBounds, TimeSpan clickDelay, CancellationToken token)
     {
-        await Task.Delay(clickDelay, token);
         token.ThrowIfCancellationRequested();
         if (EscapeDown)
             throw new OperationCanceledException();
@@ -193,17 +193,36 @@ internal sealed class GameWindow
             CheckFocus();
             throw new InvalidOperationException("The game button is covered or unavailable.");
         }
-        CheckFocus();
+        // Let the game update its hovered control before delivering the button press.
+        var minimumHover = TimeSpan.FromMilliseconds(100);
+        await Task.Delay(clickDelay > minimumHover ? clickDelay : minimumHover, token);
+        if (Bounds() != observedBounds)
+            throw new InvalidOperationException("The game window moved after verification.");
+        Point cursor;
+        if (!GetCursorPos(out cursor) || cursor != point)
+            throw new InvalidOperationException("The mouse moved away from the game button. Check the current game screen.");
         if (GetAncestor(WindowFromPoint(point), 2) != handle)
             throw new InvalidOperationException("The game button is covered or unavailable.");
         token.ThrowIfCancellationRequested();
         if (EscapeDown)
             throw new OperationCanceledException();
-        var inputs = new[] {
-            new Input { Mouse = new MouseInput { Flags = 0x0002 } },
-            new Input { Mouse = new MouseInput { Flags = 0x0004 } }
-        };
-        if (SendInput(2, inputs, Marshal.SizeOf(typeof(Input))) != 2)
+        if (!SendMouse(0x0002)) // MOUSEEVENTF_LEFTDOWN
             throw new InvalidOperationException("Windows did not deliver the click. Check the current game screen.");
+        try
+        {
+            // The game can miss a press and release delivered in the same frame.
+            await Task.Delay(60, token);
+        }
+        finally
+        {
+            if (!SendMouse(0x0004)) // MOUSEEVENTF_LEFTUP
+                throw new InvalidOperationException("Windows did not release the mouse button. Check the current game screen.");
+        }
+    }
+
+    private static bool SendMouse(uint flags)
+    {
+        var input = new[] { new Input { Mouse = new MouseInput { Flags = flags } } };
+        return SendInput(1, input, Marshal.SizeOf(typeof(Input))) == 1;
     }
 }

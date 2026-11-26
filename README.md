@@ -8,7 +8,7 @@ Download [E7Crafting-Simple.zip](https://github.com/Nujuron/epicseven-gear-creaf
 
 If another app takes focus mid-run, crafting pauses and the history records which process was in front. Return to Epic Seven to resume. The app rechecks the game before sending a pending click and stops if the checked screen changed.
 
-**Click delay** defaults to 0.20 seconds before each automated click. **Screenshot delay** defaults to 0.30 seconds before reading the screen. Both are adjustable before a run, and steps with longer animation waits keep those waits.
+**Click delay** defaults to 0.20 seconds between moving the pointer to a button and pressing it. The app gives the game at least 0.10 seconds to register the new pointer position. **Screenshot delay** defaults to 0.30 seconds before reading the screen. Both are adjustable before a run, and steps with longer animation waits keep those waits.
 
 Each batch uses the recipe's material cost from the Workshop and checks for enough gold before crafting. The app applies the existing Simple Selection filter, checks the chosen action's confirmation, and verifies the remaining gear and material balance after the batch. Selling depends on the selected count and result, with no reward amounts to read. The log distinguishes pieces sold from pieces extracted. Core counts come from the extraction preview when readable. Inventory space is estimated from the free-slot count you enter and the number kept per batch.
 
